@@ -1,1 +1,1 @@
-# face-landmark-detector
+# Landmark detector script that will be used to predict landmark and align face for Face Match

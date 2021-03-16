@@ -1,0 +1,4 @@
+
+
+class KeypointException(Exception):
+    pass

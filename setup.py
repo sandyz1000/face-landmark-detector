@@ -9,7 +9,7 @@ setup(
     name="face-landmark-detector",
     scripts=["scripts/cli"],
     version="0.1.0",
-    description="Pixar Facematch",
+    description="Face keypoints detector",
     long_description=long_description,
     license='GNU License',
     long_description_content_type="text/markdown",

@@ -17,3 +17,8 @@ def video_predict(facedetector_fn, landmark_model):
     cap.release()
     cv2.destroyAllWindows()
 
+
+
+def predict(model, img, out_fname):
+    out = model.predict_segmentation(inp=img, out_fname=out_fname)
+    return out

@@ -2,16 +2,12 @@ import numpy as np
 import scipy.ndimage as ndi
 import math
 import sys
+import typing
 import cv2
 from skimage import exposure
 import tensorflow as tf
-try:
-    import imgaug as ia
-    from imgaug import augmenters as iaa
-except ImportError:
-    print("Error in loading augmentation, can't import imgaug."
-          "Please make sure it is installed.")
-    sys.exit(1)
+import imgaug as ia
+from imgaug import augmenters as iaa
 
 
 def image_aug_random(img):
@@ -296,6 +292,7 @@ def generate_rotated_image(image, angle, size=None, crop_center=False,
 
 
 IMAGE_AUGMENTATION_NUM_TRIES = 10
+AUGMENTATION_OPTIONS = ('all', 'both', 'default', 'geometric', 'non_geometric', )
 # IMAGE_AUGMENTATION_SEQUENCE = None
 
 
@@ -310,7 +307,7 @@ IMAGE_AUGMENTATION_NUM_TRIES = 10
 def _apply_aug_default():
     """
     Apply General augmentation in a single pipeline
-    """        
+    """
     sometimes = (lambda aug: iaa.Sometimes(0.5, aug))
     # Define our sequence of augmentation steps that will be applied to every image.
     return iaa.Sequential(
@@ -351,7 +348,7 @@ def _apply_aug_default():
             # strong.
             #
             iaa.SomeOf((0, 5),
-                    [
+                       [
                 # Convert some images into their superpixel representation,
                 # sample between 20 and 200 superpixels per image, but do
                 # not replace all superpixels with their average, only
@@ -500,7 +497,7 @@ def _apply_aug_non_geometric():
 
 def _apply_aug_both():
     """First apply non-geometric and geometric augmentation to image
-    """    
+    """
     return iaa.Sequential([
         iaa.Sometimes(0.65, _apply_aug_non_geometric()),
         iaa.Sometimes(0.65, _apply_aug_geometric())
@@ -542,7 +539,7 @@ def _apply_aug_all():
             # image don't execute all of them, as that would often be way too
             # strong
             iaa.SomeOf((0, 5),
-                    [
+                       [
                 # convert images into their superpixel representation
                 sometimes(iaa.Superpixels(
                     p_replace=(0, 1.0), n_segments=(20, 200))),
@@ -628,23 +625,20 @@ def _augment_seg(img, seg, augmentation_name, prefix="_apply_aug"):
     return image_aug, segmap_aug
 
 
-def _augment_keypoints(img, keypoints, augmentation_name, prefix="_apply_aug"):
+def _augment_keypoints(img: np.ndarray, keypoints: typing.List[ia.Keypoint],
+                       augmentation_name: str, prefix="_apply_aug"):
     IMAGE_AUGMENTATION_SEQUENCE = getattr(sys.modules[__name__], f"{prefix}_{augmentation_name}", None)
 
     # Create a deterministic augmentation from the random one
     aug_det = IMAGE_AUGMENTATION_SEQUENCE.to_deterministic()
     # Augment the input image
-    image_aug = aug_det.augment_image(img)
-
-    keymap = ia.KeypointsOnImage(keypoints)
-    keymap_aug = aug_det.augment_keypoints(keypoints)
-
+    image_aug, keymap_aug = aug_det.augment_image(img, keypoints=keypoints)
     return image_aug, keymap_aug
-    
+
 
 def _augment_img(num_tries, img, augmentation_name, prefix="_load_augmentation"):
     IMAGE_AUGMENTATION_SEQUENCE = getattr(sys.modules[__name__], f"{prefix}_{augmentation_name}", None)
-    
+
     # Create a deterministic augmentation from the random one
     aug_det = IMAGE_AUGMENTATION_SEQUENCE.to_deterministic()
     image_aug = aug_det.augment_image(img)
@@ -683,8 +677,5 @@ def augment_keypoints(img, keypoints, augmentation_name="default", num_tries=IMA
     assert augmentation_name in AUGMENTATION_OPTIONS, "Invalid augmentation option"
     return _try_n_times(
         _augment_keypoints, num_tries,
-        img, _augment_keypoints, augmentation_name=augmentation_name
+        img, keypoints, augmentation_name=augmentation_name
     )
-
-
-AUGMENTATION_OPTIONS = ('all', 'both', 'default', 'geometric', 'non_geometric', )

@@ -1,33 +1,84 @@
 import matplotlib.pyplot as plt
 import time
-import sys
-from .data.generator import get_train_dataset
+from .data.generator import image_keypoints_generator
 from .networks.basic_models import build_model
-from typing import NamedTuple
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, TensorBoard
+import collections
 
 
-class DatasetCfg(NamedTuple):
-    img_dirpath: str
-    annot_dirpath: str
+class DatasetCfg(collections.namedtuple('DatasetCfg',
+                                        ('img_dirpath', 'keypts_dirpath'))):
+    pass
 
 
 class Train:
-    def __init__(self, model_path="./",
+    def __init__(self, checkpoints_path="./",
                  train_dataset: DatasetCfg = None, val_dataset: DatasetCfg = None,
-                 nClasses=15, const=10, input_shape=(96, 96)):
+                 nClasses=15, output_shape=(96, 96), augmentation_name='all'):
         self.n_classes = nClasses
-        self.input_shape = input_shape
-        self.model_path = model_path
+        self.output_shape = output_shape
+        self.checkpoints_path = checkpoints_path
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
+        self.augmentation_name = augmentation_name
+
+    def init_train(self, epochs=30, batch_size=32, initial_epoch=5, gen_use_multiprocessing=False, log_dir=""):
+        model = build_model(self.n_classes, input_shape=self.input_shape)
+        train_gen, steps_per_epoch = image_keypoints_generator(
+            self.train_dataset.img_dirpath,
+            self.train_dataset.keypts_dirpath,
+            batch_size,
+            self.output_height,
+            self.output_width,
+            do_augment=True,
+            augmentation_name=self.augmentation_name)
+        valid_gen, val_steps_per_epoch = image_keypoints_generator(
+            self.val_dataset.img_dirpath,
+            self.val_dataset.keypts_dirpath,
+            batch_size,
+            self.output_height,
+            self.output_width,
+            do_augment=True,
+            augmentation_name=self.augmentation_name)
+
+        callbacks = [
+            EarlyStopping(min_delta=0.001, patience=5),
+            TensorBoard(log_dir=log_dir)
+        ]
+        if self.checkpoints_path is not None:
+            default_callback = ModelCheckpoint(
+                filepath=self.checkpoints_path + ".{epoch:05d}",
+                save_weights_only=True,
+                verbose=True
+            )
+
+            callbacks += [
+                default_callback
+            ]
+
+        model.fit(train_gen,
+                  steps_per_epoch=steps_per_epoch,
+                  validation_data=valid_gen,
+                  validation_steps=val_steps_per_epoch,
+                  epochs=epochs, callbacks=callbacks,
+                  use_multiprocessing=gen_use_multiprocessing, initial_epoch=initial_epoch)
+
+
+class TrainCustomIter:
+    """ Train class where with custom keras iterator
+    Custom iteration with invoking fit method with epoch 1, use mainly for experimetation.
+    """
+    def __init__(self, checkpoints_path="./",
+                 train_dataset: DatasetCfg = None, val_dataset: DatasetCfg = None,
+                 nClasses=15, output_shape=(96, 96), ):
+        self.n_classes = nClasses
+        self.output_shape = output_shape
+        self.checkpoints_path = checkpoints_path
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
 
-    def init_train(self, epochs=30, batch_size=32,):
-        fcnmodel = build_model(self.n_classes, input_shape=self.input_shape)
-        train_gen = get_train_dataset(self.train_dataset.img_dirpath, self.train_dataset.annot_dirpath,
-                                      self.input_shape, batch_size=batch_size, is_train=True)
-        valid_gen = get_train_dataset(self.val_dataset.img_dirpath, self.val_dataset.annot_dirpath,
-                                      self.input_shape, batch_size=batch_size, is_train=False)
-
+    def train(self, epochs=30, batch_size=32, initial_epoch=5, log_dir=""):
+        model = None
         history = {"loss": [], "val_loss": []}
         for iepoch in range(epochs):
             start = time.time()
@@ -35,18 +86,18 @@ class Train:
             x_batch, y_batch, w_batch = (None, None, None)
             xval_batch, yval_batch, wbatch_val = (None, None, None)
 
-            hist = fcnmodel.fit(x_batch, y_batch,
-                                sample_weight=w_batch,
-                                validation_data=(xval_batch, yval_batch, wbatch_val),
-                                batch_size=batch_size,
-                                epochs=1,
-                                verbose=0)
+            hist = model.fit(x_batch, y_batch,
+                             sample_weight=w_batch,
+                             validation_data=(xval_batch, yval_batch, wbatch_val),
+                             batch_size=batch_size,
+                             epochs=1,
+                             verbose=0)
             history["loss"].append(hist.history["loss"][0])
             history["val_loss"].append(hist.history["val_loss"][0])
             end = time.time()
             print("Epoch {:03}: loss {:6.4f} val_loss {:6.4f} {:4.1f}sec".format(
                 iepoch + 1, history["loss"][-1], history["val_loss"][-1], end - start))
-        fcnmodel.save(model_path)
+        model.save(self.checkpoints_path)
         self.training_plt(history)
 
     def training_plt(self, history) -> None:
@@ -54,31 +105,6 @@ class Train:
             plt.plot(history[label], label=label)
         plt.legend()
         plt.show()
-
-    def prediction(fcnmodel, X_train, out_shape=(96, 96), nClasses=15):
-        y_pred = fcnmodel.predict(X_train)
-        y_pred = y_pred.reshape(-1, out_shape[0], out_shape[1], nClasses)
-        return y_pred
-
-    def ksg_init_train(n_classess, img_shape=(160, 160), **kwargs):
-        try:
-            import keras_segmentation
-            from keras_segmentation.models.unet import vgg_unet
-        except ImportError:
-            print(">>>> =====Install keras-segmentation module =====>>>")
-            sys.exit(1)
-
-        model = vgg_unet(n_classes=n_classess, input_height=img_shape[0], input_width=img_shape[1])
-
-        model.train(
-            train_images="dataset1/images_prepped_train/",
-            train_annotations="dataset1/annotations_prepped_train/",
-            checkpoints_path="/tmp/vgg_unet_1",
-            epochs=5
-        )
-
-    def ksg_evaluation(model, img_dir, annot_dir):
-        return model.evaluate_segmentation(inp_images_dir=img_dir, annotations_dir=annot_dir)
 
 
 def _main():
@@ -88,13 +114,13 @@ def _main():
                         help="Epochs size")
     parser.add_argument('--n_classes', default=15, type=int,
                         help="No of classes used for training")
-    parser.add_argument('--model_path', default="./", type=str,
+    parser.add_argument('--checkpoints_path', default="./", type=str,
                         help="Model path")
     parser.add_argument('--data_dir', default="./", type=str,
                         help="Training data location")
 
-    args = vars(parser.parse_args())
-    init_train(**args.__dict__)
+    args = parser.parse_args()
+    
 
 
 if __name__ == "__main__":

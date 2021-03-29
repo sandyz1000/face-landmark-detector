@@ -1,9 +1,22 @@
 import matplotlib.pyplot as plt
 import time
+import numpy as np
+from pathlib import Path
 from .data.generator import image_keypoints_generator
+# from .data.tfds import get_train_dataset
 from .networks.basic_models import build_model
+from .networks.fcn import fcn_8_resnet50, fcn_8_mobilenet, fcn_8_vgg
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, TensorBoard
 import collections
+import logging
+
+logger = logging.getLogger(__name__)
+_SUPPORTED_MODELS = {
+    'fcn_8_resnet50': fcn_8_resnet50,
+    'fcn_8_mobilenet': fcn_8_mobilenet,
+    'fcn_8_vgg': fcn_8_vgg,
+    'default': build_model
+}
 
 
 class DatasetCfg(collections.namedtuple('DatasetCfg',
@@ -11,7 +24,35 @@ class DatasetCfg(collections.namedtuple('DatasetCfg',
     pass
 
 
+def find_weight(y_tra):
+    """
+    :param y_tra: np.array of shape (N_image, height, width, N_landmark)
+    :type y_tra: numpy.ndarray
+    :return: weights ->
+        np.array of shape (N_image, height, width, N_landmark)
+        weights[i_image, :, :, i_landmark] = 1 
+                        if the (x,y) coordinate of the landmark for this image is recorded.
+        else  weights[i_image, :, :, i_landmark] = 0
+    :rtype: [type]
+    """
+    weight = np.zeros_like(y_tra)
+    count0, count1 = 0, 0
+    for irow in range(y_tra.shape[0]):
+        for ifeat in range(y_tra.shape[-1]):
+            if np.all(y_tra[irow, :, :, ifeat] == 0):
+                value = 0
+                count0 += 1
+            else:
+                value = 1
+                count1 += 1
+            weight[irow, :, :, ifeat] = value
+    logger.info("N landmarks={:5.0f}, N missing landmarks={:5.0f}, weight.shape={}".
+                format(count0, count1, weight.shape))
+    return weight
+
+
 class Train:
+    
     def __init__(self, checkpoints_path="./",
                  train_dataset: DatasetCfg = None, val_dataset: DatasetCfg = None,
                  nClasses=15, output_shape=(96, 96), augmentation_name='all'):
@@ -23,7 +64,8 @@ class Train:
         self.augmentation_name = augmentation_name
 
     def init_train(self, epochs=30, batch_size=32, initial_epoch=5, gen_use_multiprocessing=False, log_dir=""):
-        model = build_model(self.n_classes, input_shape=self.input_shape)
+        model = build_model(self.n_classes, input_height=self.input_shape[0], input_width=self.input_shape[1])
+        # model = fcn_8_resnet50(self.n_classes, input_height=self.input_shape[0], input_width=self.input_shape[1])
         train_gen, steps_per_epoch = image_keypoints_generator(
             self.train_dataset.img_dirpath,
             self.train_dataset.keypts_dirpath,
@@ -65,9 +107,12 @@ class Train:
 
 
 class TrainCustomIter:
-    """ Train class where with custom keras iterator
+    """ 
+    NOTE: Deprecated
+    Train class where with custom keras iterator
     Custom iteration with invoking fit method with epoch 1, use mainly for experimetation.
     """
+
     def __init__(self, checkpoints_path="./",
                  train_dataset: DatasetCfg = None, val_dataset: DatasetCfg = None,
                  nClasses=15, output_shape=(96, 96), ):
@@ -78,7 +123,7 @@ class TrainCustomIter:
         self.val_dataset = val_dataset
 
     def train(self, epochs=30, batch_size=32, initial_epoch=5, log_dir=""):
-        model = None
+        model = build_model(self.n_classes, input_height=self.input_shape[0], input_width=self.input_shape[1])
         history = {"loss": [], "val_loss": []}
         for iepoch in range(epochs):
             start = time.time()
@@ -112,6 +157,8 @@ def _main():
     parser = argparse.ArgumentParser("Training script for predicting Landmark using FCN network")
     parser.add_argument('--epochs', default=30, type=int,
                         help="Epochs size")
+    parser.add_argument('--batch_size', default=32, type=int,
+                        help="Batch size")
     parser.add_argument('--n_classes', default=15, type=int,
                         help="No of classes used for training")
     parser.add_argument('--checkpoints_path', default="./", type=str,
@@ -120,7 +167,11 @@ def _main():
                         help="Training data location")
 
     args = parser.parse_args()
-    
+    data_dir = Path(args.data_dir)
+    train_dataset = DatasetCfg(img_dirpath=data_dir.join("train"), keypts_dirpath=data_dir.join("train"))
+    val_dataset = DatasetCfg(img_dirpath=data_dir.join("validate"), keypts_dirpath=data_dir.join("validate"))
+    trainer = Train(args.checkpoints_path, train_dataset, val_dataset, nClasses=args.n_classes, )
+    trainer.init_train(epochs=args.epochs, batch_size=args.batch_size)
 
 
 if __name__ == "__main__":

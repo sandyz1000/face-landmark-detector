@@ -1,7 +1,5 @@
 from keras.models import Model
 import keras.layers as KL
-import keras.backend as K
-
 from .config import IMAGE_ORDERING
 
 
@@ -49,10 +47,9 @@ def vanilla_encoder(input_height=224, input_width=224, channels=3):
     return img_input, levels
 
 
-def build_model(n_classes, input_shape=(96, 96)):
-    input_height, input_width = input_shape
+def build_model(n_classes, input_height=96, input_width=96):
     # output shape is the same as input
-    _, output_width = input_shape
+    output_width = input_width
     n = 32 * 5
     nfmp_block1 = 64
     nfmp_block2 = 128

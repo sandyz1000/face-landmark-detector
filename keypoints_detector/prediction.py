@@ -4,6 +4,7 @@ import json
 import six
 import numpy as np
 from .data.generator import get_image_array
+from .utils.plots import visualize_segmentation, class_colors
 from .data.config import IMAGE_ORDERING
 
 
@@ -28,6 +29,7 @@ def predict(model, img, out_fname):
     out = model.predict_segmentation(inp=img, out_fname=out_fname)
     return out
 
+
 def model_from_checkpoint_path(checkpoints_path):
     from .models.all_models import model_from_name
     assert (os.path.isfile(checkpoints_path+"_config.json")), "Checkpoint not found."
@@ -45,6 +47,28 @@ def model_from_checkpoint_path(checkpoints_path):
         status.expect_partial()
 
     return model
+
+
+
+def show_transformed(X_train, y_train, num_plot, lm_colname, iexample=0, transform_fn=None):
+    count = 1
+    Nhm = 10
+    fig = plt.figure(figsize=[Nhm * 2.5, 2 * num_plot])
+    for _ in range(num_plot):
+        x_batch, y_batch = transform_fn(X_train[[iexample]], y_train[[iexample]])
+        ax = fig.add_subplot(num_plot, Nhm + 1, count)
+        ax.imshow(x_batch[0, :, :, 0], cmap="gray")
+        ax.axis("off")
+        count += 1
+
+        for ifeat in range(Nhm):
+            ax = fig.add_subplot(num_plot, Nhm + 1, count)
+            ax.imshow(y_batch[0, :, :, ifeat], cmap="gray")
+            ax.axis("off")
+            if count < Nhm + 2:
+                ax.set_title(lm_colname[ifeat])
+            count += 1
+    plt.show()
 
 
 def predict(model=None, inp=None, out_fname=None,

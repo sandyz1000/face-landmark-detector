@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import random
+import typing
 class_colors = [(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
                 for _ in range(5000)]
 
@@ -112,15 +113,18 @@ def overlay_seg_image(inp_img, seg_img):
     return fused_img
 
 
-def visualize_segmentation(seg_arr, inp_img=None, n_classes=None,
-                           colors=class_colors, class_names=None,
-                           overlay_img=False, show_legends=False,
-                           prediction_width=None, prediction_height=None):
+def visualize_keypoints(
+        kpts_arr: np.ndarray, inp_img: np.ndarray = None, n_classes: int = None,
+        colors: typing.List[typing.Tuple] = class_colors, class_names: str = None,
+        overlay_img: bool = False, show_legends: bool = False,
+        pred_dim: typing.Tuple = None
+) -> np.ndarray:
     # TODO: Fix this method
+    prediction_width, prediction_height = pred_dim
     if n_classes is None:
-        n_classes = np.max(seg_arr)
+        n_classes = np.max(kpts_arr)
 
-    seg_img = get_colored_segmentation_image(seg_arr, n_classes, colors=colors)
+    seg_img = get_colored_segmentation_image(kpts_arr, n_classes, colors=colors)
 
     if inp_img is not None:
         original_h = inp_img.shape[0]
@@ -143,3 +147,20 @@ def visualize_segmentation(seg_arr, inp_img=None, n_classes=None,
         seg_img = concat_lenends(seg_img, legend_img)
 
     return seg_img
+
+
+def draw_marks(image, marks, color=(0, 255, 0)):
+    """
+    Draw the facial landmarks on an image
+
+    Parameters
+    ----------
+    image : np.uint8
+        Image on which landmarks are to be drawn.
+    marks : list or numpy array
+        Facial landmark points
+    color : tuple, optional
+        Color to which landmarks are to be drawn with. The default is (0, 255, 0).
+    """
+    for mark in marks:
+        cv2.circle(image, (mark[0], mark[1]), 2, color, -1, cv2.LINE_AA)

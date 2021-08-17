@@ -7,7 +7,9 @@ requirements = open("requirements.txt", 'r').readlines()
 
 setup(
     name="face-landmark-detector",
-    scripts=["scripts/cli"],
+    entry_points={
+        'console_script': ["face_landmark_detect=scripts.cli:main", "face_landmark_prepare=scripts.prepare_dataset"],
+    },
     version="0.1.0",
     description="Face keypoints detector",
     long_description=long_description,

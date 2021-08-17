@@ -1,6 +1,7 @@
 from keras.models import Model
 import keras.layers as KL
 from .config import IMAGE_ORDERING
+from .fcn import fcn_8_resnet50, fcn_8_mobilenet, fcn_8_vgg
 
 
 def vanilla_encoder(input_height=224, input_width=224, channels=3):
@@ -97,3 +98,11 @@ def build_model(n_classes, input_height=96, input_width=96):
     model.compile(loss='mse', optimizer="rmsprop", sample_weight_mode="temporal")
 
     return model
+
+
+LANDMARKS_MODELS = {
+    'fcn_8_resnet50': fcn_8_resnet50,
+    'fcn_8_mobilenet': fcn_8_mobilenet,
+    'fcn_8_vgg': fcn_8_vgg,
+    'default': build_model
+}

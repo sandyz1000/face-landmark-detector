@@ -188,8 +188,8 @@ def transform_imgs(im: np.ndarray, landmarks: np.ndarray, weights: np.ndarray = 
         :type im: numpy.ndarray
         :param kpts: Nd array of k channels. kpts.shape (height,width,n_landmarks)
         :type kpts: numpy.ndarray
-        """        
-        
+        """
+
         im, kpts = _transform_img(im, kpts)
         # horizontal flip
         im, kpts, wt = _horizontal_flip(im, kpts, wt)
@@ -264,10 +264,15 @@ def generate_hm(height, width, keypoints, s=3):
     return hm
 
 
-def custom_image_keypts_generator(images_path, segs_path, batch_size,
-                                  n_classes, output_height, output_width,
-                                  read_image_type=cv2.IMREAD_COLOR,
-                                  ignore_keypts=False):
+def custom_image_keypts_generator(
+    images_path: str,
+    segs_path: str,
+    n_classes: str,
+    batch_size: int = 64,
+    output_dim: typing.Tuple = (),
+    read_image_type: int = cv2.IMREAD_COLOR,
+    ignore_keypts: bool = False
+) -> typing.Iterator:
     """ Apply custom transformation on image and keypoints
     """
     # TODO: Fix this method
@@ -279,7 +284,7 @@ def custom_image_keypts_generator(images_path, segs_path, batch_size,
         img_list = get_image_list_from_path(images_path)
         random.shuffle(img_list)
         img_list_gen = itertools.cycle(img_list)
-
+    output_height, output_width = output_dim
     while True:
         X = []
         Y = []
@@ -311,14 +316,20 @@ def custom_image_keypts_generator(images_path, segs_path, batch_size,
             yield np.array(X), np.array(Y)
 
 
-def image_keypoints_generator(images_path, segs_path, batch_size,
-                              n_classes, output_height, output_width,
-                              do_augment=False,
-                              augmentation_name="aug_all",
-                              preprocessing=None,
-                              read_image_type=cv2.IMREAD_COLOR,
-                              ignore_keypts=False):
-
+def image_keypoints_generator(
+    images_path: str,
+    segs_path: str,
+    n_classes: str,
+    batch_size: int = 64,
+    output_dim: typing.Tuple = (),
+    do_augment: bool = False,
+    augmentation_name: str = "aug_all",
+    preprocessing: typing.Callable = None,
+    read_image_type: int = cv2.IMREAD_COLOR,
+    ignore_keypts: bool = False
+) -> typing.Iterator:
+    """ Apply transformation on image and keypoints with imgaug
+    """
     if not ignore_keypts:
         img_keypts_pairs = get_pairs_from_paths(images_path, segs_path)
         random.shuffle(img_keypts_pairs)
@@ -327,7 +338,7 @@ def image_keypoints_generator(images_path, segs_path, batch_size,
         img_list = get_image_list_from_path(images_path)
         random.shuffle(img_list)
         img_list_gen = itertools.cycle(img_list)
-
+    output_width, output_height = output_dim
     while True:
         X = []
         Y = []

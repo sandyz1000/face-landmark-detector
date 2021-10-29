@@ -5,6 +5,9 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
+DATA_DIR = None
+IMG_DIR = None
+
 columns_lm = [
     "left_eye_center",
     "right_eye_center",
@@ -23,32 +26,33 @@ columns_lm = [
     "mouth_center_bottom_lip",
 ]
 
-landmark_tuple_func = (lambda x, y: (-1, -1) if np.isnan(x) or np.isnan(y) else (x, y))
+
+def landmark_tuple_func(x, y):
+    return (-1, -1) if np.isnan(x) or np.isnan(y) else (x, y)
 
 
 def save_img_landmark(
-    row, index, height, width, is_training_set=False, prefix="kaggle"
+    row, index, is_training=False, prefix="kaggle"
 ):
-
-    landmarks = [
-        landmark_tuple_func(row[colnm + "_x"], row[colnm + "_y"])
-        for colnm in columns_lm
-    ]
     img = row["Image"]
-    pil_img = Image.fromarray(img).resize(width, height)
-    pil_img.save(f"{prefix}_{index}.png")
+    pil_img = Image.fromarray(img)
+    pil_img.save(os.path.join(IMG_DIR, f"{prefix}_{index}.png"))
 
-    if is_training_set:
-        with open(f"{prefix}_{index}.pts", "w") as fp:
-            fp.write("version: 1")
-            fp.write("n_points: %d" % len(landmarks))
-            fp.write("{")
+    if is_training:
+        landmarks = [
+            landmark_tuple_func(row[colnm + "_x"], row[colnm + "_y"])
+            for colnm in columns_lm
+        ]
+        with open(os.path.join(IMG_DIR, f"{prefix}_{index}.pts"), "w") as fp:
+            fp.write("version: 1\n")
+            fp.write("n_points: %d\n" % len(landmarks))
+            fp.write("{\n")
             for landmark in landmarks:
-                fp.write(landmark.join(" "))
+                fp.write(" ".join([str(pt) for pt in landmark]) + "\n")
             fp.write("}")
 
 
-def prepare_and_save(fname, img_shape=(96, 96), is_train=True, prefix="kaggle"):
+def prepare_and_save(fname, img_shape=(96, 96), is_training=False, prefix="kaggle"):
     """
     load test/train data
     cols : a list containing landmark label names.
@@ -60,26 +64,29 @@ def prepare_and_save(fname, img_shape=(96, 96), is_train=True, prefix="kaggle"):
     return: None (Save the image and path to given location)
 
     """
+    global IMG_DIR
+    IMG_DIR = os.path.join(DATA_DIR, 'training' if is_training else 'test')
+    os.makedirs(IMG_DIR, exist_ok=True)
+
     df = pd.read_csv(os.path.expanduser(fname))
     df["Image"] = (
-        df["Image"].apply(lambda im: np.fromstring(im, sep=" ")).astype(np.float32)
+        df["Image"].apply(lambda im: np.fromstring(im, sep=" ").reshape(img_shape[0], img_shape[1]).astype(np.uint8))
     )
 
     # row with at least one NA columns are removed!
     df = df.fillna(-1)
 
-    for index, row in enumerate(df.iterrows()):
+    for index, row in df.iterrows():
         save_img_landmark(
             row,
             index,
-            img_shape[0],
-            img_shape[1],
-            is_training_set=is_train,
+            is_training=is_training,
             prefix=prefix,
         )
 
 
 def main():
+    global DATA_DIR
     import argparse
 
     parser = argparse.ArgumentParser("Parse and prepare dataset from csv")
@@ -102,8 +109,8 @@ def main():
     FTRAIN = os.path.join(DATA_DIR, "training.csv")
     FTEST = os.path.join(DATA_DIR, "test.csv")
 
-    prepare_and_save(FTRAIN, img_shape=args.img_shape, is_train=True)
-    prepare_and_save(FTEST, img_shape=args.img_shape)
+    prepare_and_save(FTRAIN, img_shape=args.img_shape, is_training=True)
+    prepare_and_save(FTEST, img_shape=args.img_shape, is_training=False)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import time
 import numpy as np
-import typing
+import typing as t
 from pathlib import Path
 from keypoints_detector.data.generator import image_keypoints_generator
 # from keypoints_detector.data.tfds import get_train_dataset
@@ -82,19 +82,22 @@ def find_weight(y_tra):
 class Train:
 
     def __init__(
-        self, checkpoints_path: str = "./weights",
+        self, 
+        checkpoints_path: str = "./weights",
         train_dataset: DatasetCfg = None,
-        val_dataset: DatasetCfg = None,
+        valid_dataset: DatasetCfg = None,
         n_classes: int = 15,
-        output_shape: typing.Tuple[int] = (96, 96),
+        input_shape: t.Tuple[int, int] = (),
+        img_dim: t.Tuple[int, int] = (96, 96),
         augmentation_name: str = 'all'
     ):
         self.n_classes = n_classes
-        self.output_shape = output_shape
+        self.img_dim = img_dim
         self.checkpoints_path = checkpoints_path
         self.train_dataset = train_dataset
-        self.val_dataset = val_dataset
+        self.val_dataset = valid_dataset
         self.augmentation_name = augmentation_name
+        self.input_shape = input_shape
 
     def init_train(
         self,
@@ -106,22 +109,21 @@ class Train:
     ):
         assert net in LANDMARKS_MODELS, "Invalid networks options"
 
-        model = LANDMARKS_MODELS[net](self.n_classes, input_height=self.input_shape[0], input_width=self.input_shape[1])
-        train_gen, steps_per_epoch = image_keypoints_generator(
+        model = LANDMARKS_MODELS[net](self.n_classes, input_height=self.img_dim[0], input_width=self.img_dim[1])
+        
+        train_gen = image_keypoints_generator(
             self.train_dataset.img_dirpath,
             self.train_dataset.keypts_dirpath,
-            batch_size,
-            self.output_height,
-            self.output_width,
+            batch_size=batch_size,
+            output_dim=self.img_dim,
             do_augment=True,
             augmentation_name=self.augmentation_name
         )
-        valid_gen, val_steps_per_epoch = image_keypoints_generator(
+        valid_gen = image_keypoints_generator(
             self.val_dataset.img_dirpath,
             self.val_dataset.keypts_dirpath,
-            batch_size,
-            self.output_height,
-            self.output_width,
+            batch_size=batch_size,
+            output_dim=self.img_dim,
             do_augment=True,
             augmentation_name=self.augmentation_name
         )
@@ -139,9 +141,9 @@ class Train:
 
         model.fit(
             train_gen,
-            steps_per_epoch=steps_per_epoch,
+            steps_per_epoch=train_gen.steps_per_epoch,
             validation_data=valid_gen,
-            validation_steps=val_steps_per_epoch,
+            validation_steps=valid_gen.steps_per_epoch,
             epochs=epochs, callbacks=callbacks,
             use_multiprocessing=gen_use_multiprocessing, initial_epoch=initial_epoch
         )
@@ -160,10 +162,10 @@ class TrainCustomIter:
         train_dataset: DatasetCfg = None,
         val_dataset: DatasetCfg = None,
         nClasses: int = 15,
-        output_shape: typing.Tuple[int] = (96, 96),
+        img_dim: t.Tuple[int] = (96, 96),
     ):
         self.n_classes = nClasses
-        self.output_shape = output_shape
+        self.img_dim = img_dim
         self.checkpoints_path = checkpoints_path
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
@@ -173,11 +175,11 @@ class TrainCustomIter:
         epochs: int = 30,
         batch_size: int = 32, initial_epoch: int = 5, log_dir: int = "logs"
     ):
-        model = build_model(self.n_classes, input_height=self.input_shape[0], input_width=self.input_shape[1])
+        model = build_model(self.n_classes, input_height=self.img_dim[0], input_width=self.img_dim[1])
         history = {"loss": [], "val_loss": []}
         for iepoch in range(epochs):
             start = time.time()
-
+            # TODO: Include image generator here
             x_batch, y_batch, w_batch = (None, None, None)
             xval_batch, yval_batch, wbatch_val = (None, None, None)
 

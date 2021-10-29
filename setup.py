@@ -8,7 +8,10 @@ requirements = open("requirements.txt", 'r').readlines()
 setup(
     name="face-landmark-detector",
     entry_points={
-        'console_script': ["face_landmark_detect=scripts.cli:main", "face_landmark_prepare=scripts.prepare_dataset"],
+        'console_scripts': [
+            "face_landmark_detect=scripts.cli:main",
+            "face_landmark_prepare=scripts.prepare_dataset"
+        ],
     },
     version="0.1.0",
     description="Face keypoints detector",
@@ -17,7 +20,7 @@ setup(
     long_description_content_type="text/markdown",
     author="Sandip Dey",
     author_email="sandip.dey1988@yahoo.com",
-    packages=['src'],
+    packages=find_packages(include=['keypoints_detector*']),
     include_package_data=True,
     install_requires=requirements,
     platforms=["linux", "unix"],

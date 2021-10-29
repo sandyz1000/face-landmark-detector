@@ -6,6 +6,9 @@ import re
 import os
 import six
 import typing
+import glob2
+import tensorflow as tf
+from functools import partial
 from .image_aug import augment_keypoints
 from imgaug.augmentables.kps import Keypoint, KeypointsOnImage
 from imgaug.augmentables.heatmaps import HeatmapsOnImage
@@ -123,7 +126,7 @@ def keypoints_to_heatmap(kpsoi: KeypointsOnImage) -> HeatmapsOnImage:
     distance_maps_normalized = distance_maps / max_distance
     # print("min:", distance_maps.min(), "max:", distance_maps_normalized.max())
     heatmaps = HeatmapsOnImage(distance_maps_normalized, shape=kpsoi.shape)
-    return heatmaps
+    return heatmaps.get_arr()
 
 
 def read_keypoints(keypts_path, cvt_imgaug_kps=False):
@@ -134,16 +137,16 @@ def read_keypoints(keypts_path, cvt_imgaug_kps=False):
     """
     with open(keypts_path, 'r') as fp:
         keypoints = []
-        for line in fp.readline():
+        for line in fp.readlines():
             _text = line.strip()
             if re.match(r'{|}', _text):
                 continue
             if re.match('version', _text):
-                version = _text
+                version = re.findall(r'\d+', _text)[0]
             elif re.match('n_points', _text):
-                n_points = _text
+                n_points = int(re.findall(r'\d+', _text)[0])
             else:
-                kps = _text.split()
+                kps = [float(cord) for cord in _text.split()]
                 keypoints.append(Keypoint(*kps) if cvt_imgaug_kps else kps)
         return keypoints, n_points, version
 
@@ -264,111 +267,186 @@ def generate_hm(height, width, keypoints, s=3):
     return hm
 
 
-def custom_image_keypts_generator(
-    images_path: str,
-    segs_path: str,
-    n_classes: str,
-    batch_size: int = 64,
-    output_dim: typing.Tuple = (),
-    read_image_type: int = cv2.IMREAD_COLOR,
-    ignore_keypts: bool = False
-) -> typing.Iterator:
-    """ Apply custom transformation on image and keypoints
-    """
-    # TODO: Fix this method
-    if not ignore_keypts:
-        img_keypts_pairs = get_pairs_from_paths(images_path, segs_path)
-        random.shuffle(img_keypts_pairs)
-        zipped = itertools.cycle(img_keypts_pairs)
-    else:
-        img_list = get_image_list_from_path(images_path)
-        random.shuffle(img_list)
-        img_list_gen = itertools.cycle(img_list)
-    output_height, output_width = output_dim
-    while True:
+class custom_image_keypts_generator:
+    def __init__(
+        self,
+        images_path: str,
+        segs_path: str,
+        n_classes: str,
+        batch_size: int = 64,
+        output_dim: typing.Tuple = (256, 256),
+        read_image_type: int = cv2.IMREAD_COLOR,
+        ignore_keypts: bool = False
+    ) -> typing.Iterator:
+        """ Apply custom transformation on image and keypoints
+        """
+        self.ignore_keypts = ignore_keypts
+        self.batch_size = batch_size
+        self.read_image_type = read_image_type
+
+        if not self.ignore_keypts:
+            img_keypts_pairs = get_pairs_from_paths(images_path, segs_path)
+            random.shuffle(img_keypts_pairs)
+            self.img_list_gen = itertools.cycle(img_keypts_pairs)
+        else:
+            img_list = get_image_list_from_path(images_path)
+            random.shuffle(img_list)
+            self.img_list_gen = itertools.cycle(img_list)
+        
+        self.steps_per_epoch = np.floor(len(img_list) / batch_size)
+        self.output_dim = output_dim
+        self.n_classes = n_classes
+    
+    def __iter__(self):
+        return self
+    
+    def __next__(self):
         X = []
         Y = []
-        for _ in range(batch_size):
-            if ignore_keypts:
-                im = next(img_list_gen)
+        for _ in range(self.batch_size):
+            if self.ignore_keypts:
+                im = next(self.img_list_gen)
                 keypoints = None
             else:
-                im, keypoints_path = next(zipped)
+                im, keypoints_path = next(self.img_list_gen)
                 keypoints, n_points, version = read_keypoints(keypoints_path)
-                assert n_points == n_classes, "No of Keypoint not equivalent to model configurations"
+                assert n_points == self.n_classes, "No of Keypoint not equivalent to model configurations"
 
-            im = cv2.imread(im, read_image_type)
+            im = cv2.imread(im, self.read_image_type)
 
-            # im = get_image_array(im, output_width, output_height, ordering=IMAGE_ORDERING)
+            # im = get_image_array(im, *self.output_dim, ordering=IMAGE_ORDERING)
             # TODO: Apply random weights to the input image
             im = transform_imgs(im, keypoints)
             X.append(im)
 
-            if not ignore_keypts:
-                heatmaps = generate_hm(output_height, output_width, keypoints, s=3)
+            if not self.ignore_keypts:
+                heatmaps = generate_hm(*self.output_dim, keypoints, s=3)
                 # Heatmaps of shape (H * W * num_keypoints), if you want to draw heatmaps in to image use
                 # heatmaps.draw_on_image(im)
                 Y.append(heatmaps)
 
-        if ignore_keypts:
-            yield np.array(X)
+        if self.ignore_keypts:
+            return np.array(X)
         else:
-            yield np.array(X), np.array(Y)
+            return np.array(X), np.array(Y)
 
 
-def image_keypoints_generator(
-    images_path: str,
-    segs_path: str,
-    n_classes: str,
-    batch_size: int = 64,
-    output_dim: typing.Tuple = (),
-    do_augment: bool = False,
-    augmentation_name: str = "aug_all",
-    preprocessing: typing.Callable = None,
-    read_image_type: int = cv2.IMREAD_COLOR,
-    ignore_keypts: bool = False
-) -> typing.Iterator:
-    """ Apply transformation on image and keypoints with imgaug
-    """
-    if not ignore_keypts:
-        img_keypts_pairs = get_pairs_from_paths(images_path, segs_path)
-        random.shuffle(img_keypts_pairs)
-        zipped = itertools.cycle(img_keypts_pairs)
-    else:
-        img_list = get_image_list_from_path(images_path)
-        random.shuffle(img_list)
-        img_list_gen = itertools.cycle(img_list)
-    output_width, output_height = output_dim
-    while True:
+class image_keypoints_generator:
+
+    def __init__(
+        self,
+        images_path: str,
+        keypts_path: str,
+        n_classes: str,
+        batch_size: int = 16,
+        output_dim: typing.Tuple = (256, 256),
+        do_augment: bool = False,
+        augmentation_name: str = "all",
+        preprocessing: typing.Callable = None,
+        read_image_type: int = cv2.IMREAD_COLOR,
+        ignore_keypts: bool = False
+    ):
+        """ Apply transformation on image and keypoints with imgaug
+        """
+        self.n_classes = n_classes
+        self.batch_size = batch_size
+        self.do_augment = do_augment
+        self.augmentation_name = augmentation_name
+        self.ignore_keypts = ignore_keypts
+        self.output_dim = output_dim
+        self.preprocessing = preprocessing
+        self.read_image_type = read_image_type
+
+        if not self.ignore_keypts:
+            img_list = get_pairs_from_paths(images_path, keypts_path)
+            random.shuffle(img_list)
+            self.img_list_gen = itertools.cycle(img_list)
+        else:
+            img_list = get_image_list_from_path(images_path)
+            random.shuffle(img_list)
+            self.img_list_gen = itertools.cycle(img_list)
+
+        self.steps_per_epoch = np.floor(len(img_list) / batch_size)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
         X = []
         Y = []
-        for _ in range(batch_size):
-            if ignore_keypts:
-                im = next(img_list_gen)
+        for _ in range(self.batch_size):
+            if self.ignore_keypts:
+                im = next(self.img_list_gen)
                 keypoints = None
             else:
-                im, keypoints_path = next(zipped)
-                keypoints, n_points, version = read_keypoints(keypoints_path, cvt_imgaug_kps=True)
-                assert n_points == n_classes, "No of Keypoint not equivalent to model configurations"
+                im, keypts_path = next(self.img_list_gen)
+                keypoints, n_points, version = read_keypoints(keypts_path, cvt_imgaug_kps=True)
+                assert n_points == self.n_classes, "No of Keypoint not equivalent to model configurations"
 
-            im = cv2.imread(im, read_image_type)
+            im = cv2.imread(im, self.read_image_type)
 
-            if do_augment:
-                assert not ignore_keypts, "Not supported yet"
-                im, keypoints = augment_keypoints(im, keypoints, augmentation_name)
+            if self.do_augment:
+                assert not self.ignore_keypts, "Not supported yet"
+                im, keypoints = augment_keypoints(im, keypoints, self.augmentation_name)
 
-            if preprocessing is not None:
-                im = preprocessing(im)
-            im = get_image_array(im, output_width, output_height, ordering=IMAGE_ORDERING)
+            if self.preprocessing is not None:
+                im = self.preprocessing(im)
+            im = get_image_array(im, *self.output_dim, ordering=IMAGE_ORDERING)
             X.append(im)
 
-            if not ignore_keypts:
+            if not self.ignore_keypts:
                 heatmaps = keypoints_to_heatmap(keypoints)
                 # Heatmaps of shape (H * W * num_keypoints), if you want to draw heatmaps in to image use
                 # heatmaps.draw_on_image(im)
                 Y.append(heatmaps)
 
-        if ignore_keypts:
-            yield np.array(X)
+        if self.ignore_keypts:
+            return np.array(X)
         else:
-            yield np.array(X), np.array(Y)
+            return np.array(X), np.array(Y)
+
+
+def get_train_dataset(
+    images_path: str,
+    segs_path: str,
+    n_classes: str,
+    generator_fn: iter,
+    batch_size: int = 64,
+    output_dim: typing.Tuple = (256, 256),
+    read_image_type: int = cv2.IMREAD_COLOR,
+    ignore_keypts: bool = False,
+):
+    """
+    Function to convert Generator to tensorflow dataset
+
+    Arguments:
+        pairs_txt {[type]} -- [description]
+        img_dir_path {[type]} -- [description]
+        generator_fn {[type]} -- [description]
+
+    Keyword Arguments:
+        img_shape {[type]} -- [description] (default: {(160, 160, 3)})
+        is_train {[type]} -- [description] (default: {True})
+        batch_size {[type]} -- [description] (default: {64})
+
+    Returns:
+        [type] -- [description]
+    """
+    
+    image_gen = partial(
+        generator_fn,
+        images_path,
+        segs_path,
+        n_classes,
+        batch_size=batch_size,
+    )
+
+    AUTOTUNE = tf.data.experimental.AUTOTUNE
+    train_ds = tf.data.Dataset.from_generator(
+        image_gen,
+        output_types=(tf.float32, tf.int32),
+        output_shapes=([None, 3, *output_dim], [None, 1])
+    )
+
+    train_ds = train_ds.prefetch(buffer_size=AUTOTUNE)
+    return train_ds

@@ -8,6 +8,7 @@ import typing as t
 from skimage import exposure
 import tensorflow as tf
 from typing import Union, Callable
+from PIL import Image
 try:
     import imgaug as ia
     from imgaug import augmenters as iaa
@@ -637,8 +638,11 @@ def _try_n_times(fn, n, *args, **kargs):
     return fn(*args, **kargs)
 
 
-def _safe_augmentation(img: Union[np.ndarray, tf.Tensor], aug_func: Callable
-                       ) -> Union[np.ndarray, tf.Tensor]:
+def _safe_augmentation(
+    image: Union[np.ndarray, tf.Tensor],
+    aug_func: Callable = None,
+    **kwargs,
+) -> Union[np.ndarray, tf.Tensor]:
     """
     Support for using with tensor/numpy Image, Incase the input image is tensor convert to numpy
     apply augmentation and convert back to tensor.
@@ -651,10 +655,10 @@ def _safe_augmentation(img: Union[np.ndarray, tf.Tensor], aug_func: Callable
         [type]: Return either tf.Tensor or np.ndarray
     """
     is_tensor = False
-    if isinstance(img, tf.Tensor):
+    if isinstance(image, tf.Tensor):
         is_tensor = True
-        img = img.numpy()
-    image_aug = aug_func(img)
+        image = image.numpy()
+    image_aug = aug_func(image=image, **kwargs)
     return tf.convert_to_tensor(image_aug) if is_tensor else image_aug
 
 
@@ -664,33 +668,32 @@ def _augment_seg(img, seg, augmentation_name, prefix="_apply_aug"):
 
     # Create a deterministic augmentation from the random one
     aug_det = augmentation_func().to_deterministic()
+    segmap = ia.SegmentationMapOnImage(seg, nb_classes=np.max(seg) + 1, shape=img.shape)
     # Augment the input image
-    image_aug = _safe_augmentation(img, aug_det.augment_image)
-
-    segmap = ia.SegmentationMapOnImage(
-        seg, nb_classes=np.max(seg) + 1, shape=img.shape)
-    segmap_aug = aug_det.augment_segmentation_maps(segmap)
+    image_aug, segmap_aug = _safe_augmentation(image=img, segmentations=segmap, aug_func=aug_det)
     segmap_aug = segmap_aug.get_arr_int()
 
     return image_aug, segmap_aug
 
 
-def _augment_keypoints(img: np.ndarray, keypoints: t.List[ia.Keypoint], augmentation_name, prefix="_apply_aug"):
+def _augment_keypoints(
+    img: np.ndarray,
+    keypoints: t.List[ia.Keypoint],
+    augmentation_name: str = 'default',
+    out_dim: t.Tuple[int, int] = (),
+    prefix="_apply_aug"
+):
     augmentation_func = getattr(sys.modules[__name__], f"{prefix}_{augmentation_name}")
 
     # Create a deterministic augmentation from the random one
     aug_det = augmentation_func().to_deterministic()
-    # Augment the input image
-    image_aug = _safe_augmentation(img, aug_det.augment_image)
-
-    keymap = ia.KeypointsOnImage(keypoints, shape=img.shape[:-1])
+    kpo_img = ia.KeypointsOnImage(keypoints, shape=img.shape[:-1])
     # Augment the keypoints
-    keymap_aug = _safe_augmentation(keymap, aug_det.augment_keypoints)
-
+    image_aug, keymap_aug = _safe_augmentation(image=img, keypoints=kpo_img, aug_func=aug_det)
     return image_aug, keymap_aug
 
 
-def _augment_img(img, augmentation_name, prefix="_apply_aug"):
+def _augment_img(img, augmentation_name='default', out_dim: t.Tuple[int, int] = (), prefix="_apply_aug"):
     augmentation_func = getattr(sys.modules[__name__], f"{prefix}_{augmentation_name}")
     # Create a deterministic augmentation from the random one
     aug_det = augmentation_func().to_deterministic()
@@ -698,33 +701,43 @@ def _augment_img(img, augmentation_name, prefix="_apply_aug"):
     return image_aug
 
 
-def augment_seg(img, seg, augmentation_name="default", num_tries=IMAGE_AUGMENTATION_NUM_TRIES):
+def augment_seg(
+    img: t.Union[np.ndarray, tf.Tensor],
+    seg: Union[np.ndarray, tf.Tensor],
+    augmentation_name: str = "default",
+    out_dim: t.Tuple[int, int] = (),
+    num_tries: int = IMAGE_AUGMENTATION_NUM_TRIES,
+    **kwargs
+):
     assert augmentation_name in AUGMENTATION_OPTIONS._list_fields(), "Invalid augmentation option"
     return _try_n_times(
         _augment_seg, num_tries,
-        img, seg, augmentation_name=augmentation_name
+        img, seg, augmentation_name=augmentation_name, **kwargs
     )
 
 
 def augment_img(
     img: Union[np.ndarray, tf.Tensor],
     augmentation_name: str = "default",
-    num_tries: int = IMAGE_AUGMENTATION_NUM_TRIES
+    num_tries: int = IMAGE_AUGMENTATION_NUM_TRIES,
+    **kwargs
 ):
     assert augmentation_name in AUGMENTATION_OPTIONS._list_fields(), "Invalid augmentation option"
     return _try_n_times(
         _augment_img, num_tries,
-        img, augmentation_name=augmentation_name
+        img, augmentation_name=augmentation_name, **kwargs
     )
 
 
 def augment_keypoints(
     img: Union[np.ndarray, tf.Tensor],
     keypoints: Union[np.ndarray, tf.Tensor],
-    augmentation_name: str = "default", num_tries: int = IMAGE_AUGMENTATION_NUM_TRIES
+    augmentation_name: str = "default",
+    num_tries: int = IMAGE_AUGMENTATION_NUM_TRIES,
+    **kwargs
 ):
     assert augmentation_name in AUGMENTATION_OPTIONS._list_fields(), "Invalid augmentation option"
     return _try_n_times(
         _augment_keypoints, num_tries,
-        img, keypoints, augmentation_name=augmentation_name
+        img, keypoints, augmentation_name=augmentation_name, **kwargs
     )

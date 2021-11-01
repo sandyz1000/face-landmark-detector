@@ -9,6 +9,7 @@ import typing
 import glob2
 import tensorflow as tf
 from functools import partial
+from PIL import Image
 from .image_aug import augment_keypoints
 from imgaug.augmentables.kps import Keypoint, KeypointsOnImage
 from imgaug.augmentables.heatmaps import HeatmapsOnImage
@@ -25,22 +26,26 @@ class DataLoaderError(Exception):
     pass
 
 
-def get_image_array(image_input,
-                    width, height,
-                    imgNorm="sub_mean", ordering='channels_first', read_image_type=1):
+def get_image_array(
+    image,
+    width, height,
+    imgNorm="sub_mean",
+    ordering='channels_first',
+    read_image_type=1,
+):
     """ Load image array from input
     """
-    if isinstance(image_input, np.ndarray):
+    if isinstance(image, np.ndarray):
         # It is already an array, use it as it is
-        img = image_input
-    elif isinstance(image_input, six.string_types):
-        if not os.path.isfile(image_input):
+        img = image
+    elif isinstance(image, six.string_types):
+        if not os.path.isfile(image):
             raise DataLoaderError("get_image_array: path {0} doesn't exist"
-                                  .format(image_input))
-        img = cv2.imread(image_input, read_image_type)
+                                  .format(image))
+        img = cv2.imread(image, read_image_type)
     else:
         raise DataLoaderError("get_image_array: Can't process input type {0}"
-                              .format(str(type(image_input))))
+                              .format(str(type(image))))
 
     if imgNorm == "sub_and_divide":
         img = np.float32(cv2.resize(img, (width, height))) / 127.5 - 1
@@ -125,11 +130,12 @@ def keypoints_to_heatmap(kpsoi: KeypointsOnImage) -> HeatmapsOnImage:
     max_distance = np.linalg.norm(np.float32([height, width]))
     distance_maps_normalized = distance_maps / max_distance
     # print("min:", distance_maps.min(), "max:", distance_maps_normalized.max())
-    heatmaps = HeatmapsOnImage(distance_maps_normalized, shape=kpsoi.shape)
-    return heatmaps.get_arr()
+    heatmaps = HeatmapsOnImage((1.0 - distance_maps_normalized)**10, shape=kpsoi.shape)
+
+    return heatmaps
 
 
-def read_keypoints(keypts_path, cvt_imgaug_kps=False):
+def read_keypoints(keypts_path, is_imgaug_kps=False):
     """Read keypoints from path, given the format
     - First line is version
     - Second line n_points
@@ -147,30 +153,41 @@ def read_keypoints(keypts_path, cvt_imgaug_kps=False):
                 n_points = int(re.findall(r'\d+', _text)[0])
             else:
                 kps = [float(cord) for cord in _text.split()]
-                keypoints.append(Keypoint(*kps) if cvt_imgaug_kps else kps)
+                keypoints.append(Keypoint(*kps) if is_imgaug_kps else kps)
+
+        if not is_imgaug_kps:
+            keypoints = np.array(keypoints)
         return keypoints, n_points, version
 
 
-def transform_imgs(im: np.ndarray, landmarks: np.ndarray, weights: np.ndarray = None):
+class transform_images:
     """ Apply transformation to an image
     """
-    # TODO: Work in progress,
     lm = {"orig": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12],
           "new": [1, 0, 4, 5, 2, 3, 8, 9, 6, 7, 12, 11]}
 
-    def _transform_img(im: np.ndarray,
-                       kpts: np.ndarray,
-                       max_rotation=0.01,
-                       max_shift=2,
-                       max_shear=0,
-                       max_scale=0.01, mode="edge"):
+    def transform(
+        self,
+        im: np.ndarray,
+        kpts: typing.List[float],
+        max_rotation=0.01,
+        max_shift=2,
+        max_shear=0,
+        max_scale=0.01,
+        mode="edge",
+    ):
         """Affine transformation for a single image
         """
-        scale = (np.random.uniform(1 - max_scale, 1 + max_scale),
-                 np.random.uniform(1 - max_scale, 1 + max_scale))
+        scale = (
+            np.random.uniform(1 - max_scale, 1 + max_scale),
+            np.random.uniform(1 - max_scale, 1 + max_scale)
+        )
         rotation_tmp = np.random.uniform(-1 * max_rotation, max_rotation)
-        translation = (np.random.uniform(-1 * max_shift, max_shift),
-                       np.random.uniform(-1 * max_shift, max_shift))
+        translation = (
+            np.random.uniform(-1 * max_shift, max_shift),
+            np.random.uniform(-1 * max_shift, max_shift)
+        )
+        
         shear = np.random.uniform(-1 * max_shear, max_shear)
         tform = transform.AffineTransform(
             scale=scale,  # ,
@@ -184,7 +201,12 @@ def transform_imgs(im: np.ndarray, landmarks: np.ndarray, weights: np.ndarray = 
 
         return im, kpts
 
-    def __fcall__(im: np.ndarray, kpts: np.ndarray, wt: np.ndarray):
+    def __call__(
+        self,
+        im: np.ndarray,
+        kpts: typing.List[float],
+        wt: np.ndarray = None
+    ):
         """
         Invoke this method by default and apply transformation to image and keypoints
         :param im: Nd array of 3 channels. im.shape (height,width,n_channel)
@@ -192,13 +214,19 @@ def transform_imgs(im: np.ndarray, landmarks: np.ndarray, weights: np.ndarray = 
         :param kpts: Nd array of k channels. kpts.shape (height,width,n_landmarks)
         :type kpts: numpy.ndarray
         """
+        assert len(kpts) == len(self.lm['orig']), \
+            ValueError("Length of keypoints is mismatched")
 
-        im, kpts = _transform_img(im, kpts)
-        # horizontal flip
-        im, kpts, wt = _horizontal_flip(im, kpts, wt)
+        im, kpts = self.transform(im, kpts)
+
+        im, kpts, wt = self.horiz_flip(im, kpts, wt)
         return im, kpts, wt
 
-    def _swap_index_for_horizontal_flip(y_batch: np.ndarray, lo: np.ndarray, ln: np.ndarray):
+    def swap_index(
+        self,
+        y_batch: typing.List[float],
+        lo: np.ndarray, ln: np.ndarray
+    ):
         """
         lm = {"orig" : [0,1,2,3,4,5,6,7,8,9,11,12],
             "new"  : [1,0,4,5,2,3,8,9,6,7,12,11]}
@@ -209,7 +237,11 @@ def transform_imgs(im: np.ndarray, landmarks: np.ndarray, weights: np.ndarray = 
         y_batch[:, :, ln] = y_orig
         return y_batch
 
-    def _horizontal_flip(im: np.ndarray, kpts: np.ndarray, wt: np.ndarray = None):
+    def horiz_flip(
+        self,
+        im: np.ndarray,
+        kpts: typing.List[float], wt: np.ndarray = None
+    ):
         """
         flip the image with 50% chance
 
@@ -227,19 +259,19 @@ def transform_imgs(im: np.ndarray, landmarks: np.ndarray, weights: np.ndarray = 
         wt.shape (height,width,n_landmarks)
         """
 
-        lo, ln = np.array(lm["orig"]), np.array(lm["new"])
+        lo, ln = np.array(self.lm["orig"]), np.array(self.lm["new"])
 
         # Handle horizontal flip in x & y axis over here
-        im = im[..., ::-1, ...]
-        kpts = _swap_index_for_horizontal_flip(kpts, lo, ln)
+        # im = tf.transpose(im, perm=[1, 0, 2])
+        im = im[::-1, ...]
+        # im = tf.transpose(im, perm=[0, 1, 2])
+        kpts = self.swap_index(kpts, lo, ln)
 
         # when horizontal flip happens to image, we need to heatmap (y) and weights y and w
         # do this if loc_w_batch is within data length
         if wt:
-            wt = _swap_index_for_horizontal_flip(wt, lo, ln)
+            wt = self.swap_index(wt, lo, ln)
         return im, kpts, wt
-
-    return __fcall__(im, landmarks, weights)
 
 
 def gaussian_k(x0, y0, sigma, width, height):
@@ -267,42 +299,83 @@ def generate_hm(height, width, keypoints, s=3):
     return hm
 
 
+def plot_img_hm_pair(img: np.ndarray, y_train: np.ndarray, outdir='output'):
+    """Helper to visualize image heatmap pair before training
+
+    Args:
+        X_train ([type]): [description]
+        y_train ([type]): [description]
+    """
+    import matplotlib.pyplot as plt
+    from tempfile import NamedTemporaryFile
+
+    # fig = plt.figure(figsize=(20, 6))
+    ax1 = plt.subplot2grid((2, 2), (0, 0), colspan=2)
+    ax1.imshow(img, cmap="gray")
+    ax1.set_title("input")
+
+    # Show heatmap below in grid
+    row, col = 0, 0
+    for j in range(y_train.shape[-1]):
+        col = j % 4
+        if not col:
+            row += 1
+
+        ax2 = plt.subplot2grid((2, 2), (row, 0), colspan=col)
+        ax2.imshow(y_train[:, :, j], cmap="gray")
+        ax2.set_title(f"index-{str(j)}")
+
+    with NamedTemporaryFile(mode='w', prefix='im-hm', dir=outdir) as f:
+        plt.savefig(f.name)
+
+    return os.path.join(outdir, f.name)
+
+
 class custom_image_keypts_generator:
     def __init__(
         self,
         images_path: str,
-        segs_path: str,
+        keypts_path: str,
         n_classes: str,
         batch_size: int = 64,
         output_dim: typing.Tuple = (256, 256),
+        do_augment: bool = False,
         read_image_type: int = cv2.IMREAD_COLOR,
-        ignore_keypts: bool = False
-    ) -> typing.Iterator:
+        ignore_keypts: bool = False,
+        repeat=2
+    ):
         """ Apply custom transformation on image and keypoints
         """
         self.ignore_keypts = ignore_keypts
         self.batch_size = batch_size
         self.read_image_type = read_image_type
+        self.do_augment = do_augment
+        self.repeat = repeat
+        self.xform_imgs = transform_images()
 
         if not self.ignore_keypts:
-            img_keypts_pairs = get_pairs_from_paths(images_path, segs_path)
-            random.shuffle(img_keypts_pairs)
-            self.img_list_gen = itertools.cycle(img_keypts_pairs)
+            img_list = get_pairs_from_paths(images_path, keypts_path)
+            random.shuffle(img_list)
+            self.img_list_gen = itertools.cycle(img_list)
         else:
             img_list = get_image_list_from_path(images_path)
             random.shuffle(img_list)
             self.img_list_gen = itertools.cycle(img_list)
-        
+
         self.steps_per_epoch = np.floor(len(img_list) / batch_size)
         self.output_dim = output_dim
         self.n_classes = n_classes
-    
-    def __iter__(self):
+        self._current_step = 0
+
+    def __iter__(self) -> typing.Iterator:
         return self
-    
+
     def __next__(self):
         X = []
         Y = []
+        if self._current_step > self.steps_per_epoch * self.repeat:
+            raise StopIteration("Index out of order")
+
         for _ in range(self.batch_size):
             if self.ignore_keypts:
                 im = next(self.img_list_gen)
@@ -315,8 +388,9 @@ class custom_image_keypts_generator:
             im = cv2.imread(im, self.read_image_type)
 
             # im = get_image_array(im, *self.output_dim, ordering=IMAGE_ORDERING)
+
             # TODO: Apply random weights to the input image
-            im = transform_imgs(im, keypoints)
+            im = self.xform_imgs(im, keypoints)
             X.append(im)
 
             if not self.ignore_keypts:
@@ -325,10 +399,28 @@ class custom_image_keypts_generator:
                 # heatmaps.draw_on_image(im)
                 Y.append(heatmaps)
 
+        self._current_step += 1
+
         if self.ignore_keypts:
             return np.array(X)
         else:
             return np.array(X), np.array(Y)
+
+
+def letterbox_image(image: np.ndarray, size: typing.Tuple[int, int]) -> np.ndarray:
+    """
+    Resize image with unchanged aspect ratio using padding
+    """
+    img_width, img_height, _ = image.shape
+    w, h = size
+    scale = min(w / img_width, h / img_height)
+    nw = int(img_width * scale)
+    nh = int(img_height * scale)
+
+    image = Image.fromarray(image).resize((nw, nh), Image.BICUBIC)
+    new_image = Image.new('RGB', size, (128, 128, 128))
+    new_image.paste(image, ((w - nw) // 2, (h - nh) // 2))
+    return np.array(new_image)
 
 
 class image_keypoints_generator:
@@ -338,13 +430,15 @@ class image_keypoints_generator:
         images_path: str,
         keypts_path: str,
         n_classes: str,
-        batch_size: int = 16,
-        output_dim: typing.Tuple = (256, 256),
+        batch_size: int = 8,
+        output_dim: typing.Tuple = (416, 416),
         do_augment: bool = False,
+        shuffle: bool = True,
         augmentation_name: str = "all",
         preprocessing: typing.Callable = None,
         read_image_type: int = cv2.IMREAD_COLOR,
-        ignore_keypts: bool = False
+        ignore_keypts: bool = False,
+        repeat=2
     ):
         """ Apply transformation on image and keypoints with imgaug
         """
@@ -356,17 +450,21 @@ class image_keypoints_generator:
         self.output_dim = output_dim
         self.preprocessing = preprocessing
         self.read_image_type = read_image_type
+        self.repeat = repeat
 
         if not self.ignore_keypts:
             img_list = get_pairs_from_paths(images_path, keypts_path)
-            random.shuffle(img_list)
-            self.img_list_gen = itertools.cycle(img_list)
+            if shuffle:
+                random.shuffle(img_list)
+            self.img_list_gen = itertools.chain(img_list)
         else:
             img_list = get_image_list_from_path(images_path)
-            random.shuffle(img_list)
-            self.img_list_gen = itertools.cycle(img_list)
+            if shuffle:
+                random.shuffle(img_list)
+            self.img_list_gen = itertools.chain(img_list)
 
         self.steps_per_epoch = np.floor(len(img_list) / batch_size)
+        self._current_step = 0
 
     def __iter__(self):
         return self
@@ -374,31 +472,37 @@ class image_keypoints_generator:
     def __next__(self):
         X = []
         Y = []
+        if self._current_step > self.steps_per_epoch * self.repeat:
+            raise StopIteration("Index out of order")
+
         for _ in range(self.batch_size):
             if self.ignore_keypts:
                 im = next(self.img_list_gen)
                 keypoints = None
             else:
-                im, keypts_path = next(self.img_list_gen)
-                keypoints, n_points, version = read_keypoints(keypts_path, cvt_imgaug_kps=True)
+                img_path, keypts_path = next(self.img_list_gen)
+                keypoints, n_points, version = read_keypoints(keypts_path, is_imgaug_kps=True)
                 assert n_points == self.n_classes, "No of Keypoint not equivalent to model configurations"
 
-            im = cv2.imread(im, self.read_image_type)
-
+            im = cv2.imread(img_path, self.read_image_type)
+            
             if self.do_augment:
                 assert not self.ignore_keypts, "Not supported yet"
-                im, keypoints = augment_keypoints(im, keypoints, self.augmentation_name)
-
+                im, kpsoi = augment_keypoints(im, keypoints, self.augmentation_name)
+                # im = letterbox_image(im, size=self.output_dim)
+                # kpsoi = kpsoi.on(im)
+            
             if self.preprocessing is not None:
                 im = self.preprocessing(im)
-            im = get_image_array(im, *self.output_dim, ordering=IMAGE_ORDERING)
             X.append(im)
 
             if not self.ignore_keypts:
-                heatmaps = keypoints_to_heatmap(keypoints)
+                hm_oimg = keypoints_to_heatmap(kpsoi)
                 # Heatmaps of shape (H * W * num_keypoints), if you want to draw heatmaps in to image use
-                # heatmaps.draw_on_image(im)
-                Y.append(heatmaps)
+                # Image.fromarray(np.hstack(hm_oimg.draw_on_image(im))).show()
+                Y.append(hm_oimg.to_uint8())
+
+        self._current_step += 1
 
         if self.ignore_keypts:
             return np.array(X)
@@ -432,13 +536,15 @@ def get_train_dataset(
     Returns:
         [type] -- [description]
     """
-    
+
     image_gen = partial(
         generator_fn,
         images_path,
         segs_path,
         n_classes,
         batch_size=batch_size,
+        read_image_type=read_image_type,
+        ignore_keypts=ignore_keypts,
     )
 
     AUTOTUNE = tf.data.experimental.AUTOTUNE

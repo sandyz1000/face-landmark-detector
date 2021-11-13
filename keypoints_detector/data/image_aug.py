@@ -12,7 +12,7 @@ from PIL import Image
 try:
     import imgaug as ia
     from imgaug import augmenters as iaa
-except ImportError:
+except Exception:
     print("Error in loading augmentation, can't import imgaug."
           "Please make sure it is installed.")
     sys.exit(1)
@@ -662,16 +662,26 @@ def _safe_augmentation(
     return tf.convert_to_tensor(image_aug) if is_tensor else image_aug
 
 
-def _augment_seg(img, seg, augmentation_name, prefix="_apply_aug"):
+def _augment_seg(
+    img: np.ndarray,
+    seg: np.ndarray,
+    augmentation_name: str,
+    prefix="_apply_aug",
+    output_dim: t.Tuple[int, int] = ()
+):
 
     augmentation_func = getattr(sys.modules[__name__], f"{prefix}_{augmentation_name}")
 
     # Create a deterministic augmentation from the random one
     aug_det = augmentation_func().to_deterministic()
-    segmap = ia.SegmentationMapOnImage(seg, nb_classes=np.max(seg) + 1, shape=img.shape)
+    if output_dim:
+        img = Image.fromarray(img).resize(output_dim, Image.BICUBIC)
+        img = np.array(img, dtype='uint8')
+    segmap = ia.SegmentationMapsOnImage(seg, nb_classes=np.max(seg) + 1, shape=img.shape)
     # Augment the input image
-    image_aug, segmap_aug = _safe_augmentation(image=img, segmentations=segmap, aug_func=aug_det)
-    segmap_aug = segmap_aug.get_arr_int()
+    image_aug, segmap = _safe_augmentation(image=img, segmentations=segmap, aug_func=aug_det)
+    
+    segmap_aug = segmap.get_arr_int()
 
     return image_aug, segmap_aug
 
@@ -680,7 +690,7 @@ def _augment_keypoints(
     img: np.ndarray,
     keypoints: t.List[ia.Keypoint],
     augmentation_name: str = 'default',
-    out_dim: t.Tuple[int, int] = (),
+    output_dim: t.Tuple[int, int] = (),
     prefix="_apply_aug"
 ):
     augmentation_func = getattr(sys.modules[__name__], f"{prefix}_{augmentation_name}")
@@ -690,6 +700,10 @@ def _augment_keypoints(
     kpo_img = ia.KeypointsOnImage(keypoints, shape=img.shape[:-1])
     # Augment the keypoints
     image_aug, keymap_aug = _safe_augmentation(image=img, keypoints=kpo_img, aug_func=aug_det)
+    if output_dim:
+        assert len(output_dim) == 2, ValueError("Output dimension should be of lenght 2")
+        im = np.array(Image.fromarray(img).resize(output_dim, Image.BICUBIC), dtype='uint8')
+        keymap_aug = keymap_aug.on(im)
     return image_aug, keymap_aug
 
 
@@ -705,10 +719,9 @@ def augment_seg(
     img: t.Union[np.ndarray, tf.Tensor],
     seg: Union[np.ndarray, tf.Tensor],
     augmentation_name: str = "default",
-    out_dim: t.Tuple[int, int] = (),
     num_tries: int = IMAGE_AUGMENTATION_NUM_TRIES,
     **kwargs
-):
+) -> t.Tuple[np.ndarray, ia.SegmentationMapOnImage]:
     assert augmentation_name in AUGMENTATION_OPTIONS._list_fields(), "Invalid augmentation option"
     return _try_n_times(
         _augment_seg, num_tries,
@@ -721,7 +734,7 @@ def augment_img(
     augmentation_name: str = "default",
     num_tries: int = IMAGE_AUGMENTATION_NUM_TRIES,
     **kwargs
-):
+) -> np.ndarray:
     assert augmentation_name in AUGMENTATION_OPTIONS._list_fields(), "Invalid augmentation option"
     return _try_n_times(
         _augment_img, num_tries,
@@ -735,7 +748,7 @@ def augment_keypoints(
     augmentation_name: str = "default",
     num_tries: int = IMAGE_AUGMENTATION_NUM_TRIES,
     **kwargs
-):
+) -> t.Tuple[np.ndarray, ia.KeypointsOnImage]:
     assert augmentation_name in AUGMENTATION_OPTIONS._list_fields(), "Invalid augmentation option"
     return _try_n_times(
         _augment_keypoints, num_tries,

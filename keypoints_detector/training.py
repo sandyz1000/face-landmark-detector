@@ -7,6 +7,7 @@ from keypoints_detector.data.generator import image_keypoints_generator
 # from keypoints_detector.data.tfds import get_train_dataset
 from keypoints_detector.networks.basic_models import build_model, LANDMARKS_MODELS
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, TensorBoard
+from tensorflow.keras.losses import categorical_crossentropy
 import collections
 import logging
 import glob
@@ -17,6 +18,11 @@ logger = logging.getLogger(__name__)
 class DatasetCfg(collections.namedtuple('DatasetCfg',
                                         ('img_dirpath', 'keypts_dirpath'))):
     pass
+
+
+def masked_categorical_crossentropy(gt, pr):
+    mask = 1 - gt[:, :, 0]
+    return categorical_crossentropy(gt, pr) * mask
 
 
 def find_latest_checkpoint(checkpoints_path, fail_safe=True):
@@ -82,48 +88,54 @@ def find_weight(y_tra):
 class Train:
 
     def __init__(
-        self, 
+        self,
+        net="default",
         checkpoints_path: str = "./weights",
         train_dataset: DatasetCfg = None,
         valid_dataset: DatasetCfg = None,
-        n_classes: int = 15,
-        input_shape: t.Tuple[int, int] = (),
-        img_dim: t.Tuple[int, int] = (96, 96),
-        augmentation_name: str = 'all'
+        n_classes: int = 68,
+        channels=3,
+        img_dim: t.Tuple[int, int] = (416, 416),
+        ignore_zero_class=False,
+        augmentation_name: str = 'non_geometric'
     ):
         self.n_classes = n_classes
-        self.img_dim = img_dim
+        self.output_dim = img_dim
         self.checkpoints_path = checkpoints_path
         self.train_dataset = train_dataset
         self.val_dataset = valid_dataset
         self.augmentation_name = augmentation_name
-        self.input_shape = input_shape
+        self.ignore_zero_class = ignore_zero_class
+        self.optimizer_name = 'adam'
+        assert net in LANDMARKS_MODELS, "Invalid networks options"
+        self.model = LANDMARKS_MODELS[net](self.n_classes,
+                                           input_height=self.output_dim[0],
+                                           input_width=self.output_dim[1],
+                                           channels=channels)
 
     def init_train(
         self,
-        net="default",
         epochs: int = 30,
         batch_size: int = 32,
         initial_epoch: int = 5,
-        gen_use_multiprocessing: bool = False, log_dir: str = "logs"
+        gen_use_multiprocessing: bool = False,
+        log_dir: str = "logs"
     ):
-        assert net in LANDMARKS_MODELS, "Invalid networks options"
-
-        model = LANDMARKS_MODELS[net](self.n_classes, input_height=self.img_dim[0], input_width=self.img_dim[1])
-        
         train_gen = image_keypoints_generator(
             self.train_dataset.img_dirpath,
             self.train_dataset.keypts_dirpath,
+            self.n_classes,
             batch_size=batch_size,
-            output_dim=self.img_dim,
+            output_dim=self.output_dim,
             do_augment=True,
             augmentation_name=self.augmentation_name
         )
         valid_gen = image_keypoints_generator(
             self.val_dataset.img_dirpath,
             self.val_dataset.keypts_dirpath,
+            self.n_classes,
             batch_size=batch_size,
-            output_dim=self.img_dim,
+            output_dim=self.output_dim,
             do_augment=True,
             augmentation_name=self.augmentation_name
         )
@@ -139,7 +151,16 @@ class Train:
                 verbose=True
             ))
 
-        model.fit(
+        if self.ignore_zero_class:
+            loss_k = masked_categorical_crossentropy
+        else:
+            loss_k = 'categorical_crossentropy'
+
+        self.model.compile(loss=loss_k,
+                           optimizer=self.optimizer_name, 
+                           metrics=['accuracy'])
+
+        self.model.fit(
             train_gen,
             steps_per_epoch=train_gen.steps_per_epoch,
             validation_data=valid_gen,

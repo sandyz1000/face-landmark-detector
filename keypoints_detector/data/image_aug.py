@@ -667,20 +667,20 @@ def _augment_seg(
     seg: np.ndarray,
     augmentation_name: str,
     prefix="_apply_aug",
-    output_dim: t.Tuple[int, int] = ()
+    resize_shape: t.Tuple[int, int] = ()
 ):
 
     augmentation_func = getattr(sys.modules[__name__], f"{prefix}_{augmentation_name}")
 
     # Create a deterministic augmentation from the random one
     aug_det = augmentation_func().to_deterministic()
-    if output_dim:
-        img = Image.fromarray(img).resize(output_dim, Image.BICUBIC)
+    if resize_shape:
+        img = Image.fromarray(img).resize(resize_shape, Image.BICUBIC)
         img = np.array(img, dtype='uint8')
     segmap = ia.SegmentationMapsOnImage(seg, nb_classes=np.max(seg) + 1, shape=img.shape)
     # Augment the input image
     image_aug, segmap = _safe_augmentation(image=img, segmentations=segmap, aug_func=aug_det)
-    
+
     segmap_aug = segmap.get_arr_int()
 
     return image_aug, segmap_aug
@@ -690,7 +690,7 @@ def _augment_keypoints(
     img: np.ndarray,
     keypoints: t.List[ia.Keypoint],
     augmentation_name: str = 'default',
-    output_dim: t.Tuple[int, int] = (),
+    resize_shape: t.Tuple[int, int] = (),
     prefix="_apply_aug"
 ):
     augmentation_func = getattr(sys.modules[__name__], f"{prefix}_{augmentation_name}")
@@ -700,14 +700,19 @@ def _augment_keypoints(
     kpo_img = ia.KeypointsOnImage(keypoints, shape=img.shape[:-1])
     # Augment the keypoints
     image_aug, keymap_aug = _safe_augmentation(image=img, keypoints=kpo_img, aug_func=aug_det)
-    if output_dim:
-        assert len(output_dim) == 2, ValueError("Output dimension should be of lenght 2")
-        im = np.array(Image.fromarray(img).resize(output_dim, Image.BICUBIC), dtype='uint8')
-        keymap_aug = keymap_aug.on(im)
+    if resize_shape:
+        assert len(resize_shape) == 2, ValueError("Output dimension should be of lenght 2")
+        image_aug = np.array(Image.fromarray(img).resize(resize_shape, Image.BICUBIC), dtype='uint8')
+        keymap_aug = keymap_aug.on(image_aug)
     return image_aug, keymap_aug
 
 
-def _augment_img(img, augmentation_name='default', out_dim: t.Tuple[int, int] = (), prefix="_apply_aug"):
+def _augment_img(
+    img: np.ndarray,
+    augmentation_name: str = 'default',
+    resize_shape: t.Tuple[int, int] = (),
+    prefix="_apply_aug"
+):
     augmentation_func = getattr(sys.modules[__name__], f"{prefix}_{augmentation_name}")
     # Create a deterministic augmentation from the random one
     aug_det = augmentation_func().to_deterministic()

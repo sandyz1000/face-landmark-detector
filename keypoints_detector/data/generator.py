@@ -314,7 +314,7 @@ def plot_img_hm_pair(img: np.ndarray, y_train: np.ndarray, outdir='output', save
     ax = fig.add_subplot(nrow, ncol, 1)
     ax.imshow(img, cmap="gray")
     ax.set_title("input")
-    
+
     # Show heatmap below in grid
     for j in range(channel):
         ax = fig.add_subplot(nrow, ncol, j + 2)
@@ -329,14 +329,35 @@ def plot_img_hm_pair(img: np.ndarray, y_train: np.ndarray, outdir='output', save
     plt.show()
 
 
+def resize_image(im: np.ndarray, output_height: int, output_width: int, convert_to_gray: bool = False):
+    im = Image.fromarray(im).resize((output_height, output_width), Image.BICUBIC)
+    if convert_to_gray:
+        im = im.convert('L')
+    return np.array(im, dtype='uint8')
+
+
+def resize_segmentation(im: np.ndarray, output_height, output_width):
+    from joblib import Parallel, delayed
+    no_channels = im.shape[-1]
+    res = Parallel(n_jobs=1)(
+        delayed(resize_image)(im[..., i], output_height, output_width) 
+        for i in range(no_channels))
+    
+    segms = np.array(res)
+    return np.transpose(segms, (1, 2, 0))
+
+
 class custom_image_keypts_generator:
     def __init__(
         self,
         images_path: str,
         keypts_path: str,
         n_classes: str,
+        input_height: int,
+        input_width: int,
+        output_height: int,
+        output_width: int,
         batch_size: int = 64,
-        output_dim: typing.Tuple = (256, 256),
         do_augment: bool = False,
         grayscale: bool = True,
         ignore_keypts: bool = False,
@@ -361,7 +382,10 @@ class custom_image_keypts_generator:
             self.img_list_gen = itertools.cycle(img_list)
 
         self.steps_per_epoch = np.floor(len(img_list) / batch_size)
-        self.output_dim = output_dim
+        self.input_height = input_height
+        self.input_width = input_width
+        self.output_height = output_height
+        self.output_width = output_width
         self.n_classes = n_classes
         self._current_step = 0
         self.sigma = 3
@@ -394,7 +418,7 @@ class custom_image_keypts_generator:
                 # Heatmaps of shape (H * W * num_keypoints), if you want to draw heatmaps in to image use
                 # heatmaps.draw_on_image(im)
                 Y.append(heatmaps)
-            
+
             # TODO: Apply random weights to the input image
             im, keypoints = self.tformimg(im, keypoints)
             X.append(im)
@@ -402,9 +426,9 @@ class custom_image_keypts_generator:
         self._current_step += 1
 
         if self.ignore_keypts:
-            return np.array(X)
+            return np.array(X, dtype=np.float32)
         else:
-            return np.array(X), np.array(Y)
+            return np.array(X, dtype=np.float32), np.array(Y, dtype=np.float32)
 
 
 def letterbox_image(image: np.ndarray, size: typing.Tuple[int, int]) -> np.ndarray:
@@ -430,15 +454,19 @@ class image_keypoints_generator:
         images_path: str,
         keypts_path: str,
         n_classes: str,
+        input_height: int,
+        input_width: int,
+        output_height: int,
+        output_width: int,
         batch_size: int = 8,
-        output_dim: typing.Tuple = (640, 640),
         do_augment: bool = False,
         shuffle: bool = True,
         augmentation_name: str = "non_geometric",
         preprocessing: typing.Callable = None,
         grayscale: bool = False,
         ignore_keypts: bool = False,
-        repeat=2
+        repeat=2,
+        no_reshape=False,
     ):
         """ Apply transformation on image and keypoints with imgaug
         """
@@ -447,10 +475,13 @@ class image_keypoints_generator:
         self.do_augment = do_augment
         self.augmentation_name = augmentation_name
         self.ignore_keypts = ignore_keypts
-        self.output_dim = output_dim
-        self.preprocessing = preprocessing
+        self.input_height = input_height
+        self.input_width = input_width
+        self.output_height = output_height
+        self.output_width = output_width
         self.grayscale = grayscale
         self.repeat = repeat
+        self.no_reshape = no_reshape
 
         if not self.ignore_keypts:
             img_list = get_pairs_from_paths(images_path, keypts_path)
@@ -465,6 +496,7 @@ class image_keypoints_generator:
 
         self.steps_per_epoch = np.floor(len(img_list) / batch_size)
         self._current_step = 0
+        self.preprocessing = preprocessing
 
     def __iter__(self):
         return self
@@ -486,11 +518,14 @@ class image_keypoints_generator:
 
             im = np.array(
                 Image.open(img_path).convert('L')
-                if self.grayscale else Image.open(img_path), dtype='uint8')
+                if self.grayscale
+                else Image.open(img_path), dtype='uint8'
+            )
 
-            if self.do_augment:
+            if self.do_augment:  # Augment online while training and should be true
                 assert not self.ignore_keypts, ValueError("Not supported yet")
-                im, kpsoi = augment_keypoints(im, keypoints, self.augmentation_name, output_dim=self.output_dim)
+                im, kpsoi = augment_keypoints(im, keypoints, self.augmentation_name,
+                                              resize_shape=(self.input_height, self.input_width))
 
             if self.preprocessing is not None:
                 im = self.preprocessing(im)
@@ -498,17 +533,22 @@ class image_keypoints_generator:
 
             if not self.ignore_keypts:
                 hm_oimg = keypoints_to_heatmap(kpsoi)
+
                 # Heatmaps of shape (H * W * num_keypoints), if you want to draw heatmaps in to image use
                 # img_hm = hm_oimg.draw_on_image(im))
                 # Image.fromarray(np.hstack(img_hm[:10]).show()
-                Y.append(hm_oimg.to_uint8())
+                seg_labels = hm_oimg.to_uint8()
+                seg_labels = resize_segmentation(seg_labels, self.output_height, self.output_width)
+                if not self.no_reshape:
+                    seg_labels = np.reshape(seg_labels, (self.output_width * self.output_height, self.n_classes))
+                Y.append(seg_labels)
 
         self._current_step += 1
 
         if self.ignore_keypts:
-            return np.array(X)
+            return np.array(X, dtype=np.float32)
         else:
-            return np.array(X), np.array(Y)
+            return np.array(X, dtype=np.float32), np.array(Y, dtype=np.float32)
 
 
 def get_train_dataset(

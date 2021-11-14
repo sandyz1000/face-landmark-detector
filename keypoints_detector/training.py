@@ -1,17 +1,20 @@
 import matplotlib.pyplot as plt
 import time
+import sys
+import six
 import numpy as np
 import typing as t
 from pathlib import Path
 from keypoints_detector.data.generator import image_keypoints_generator
 # from keypoints_detector.data.tfds import get_train_dataset
 from keypoints_detector.networks.basic_models import build_model, LANDMARKS_MODELS
-from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, TensorBoard
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, TensorBoard, Callback
 from tensorflow.keras.losses import categorical_crossentropy
 import collections
 import logging
 import glob
-
+import os
+import json
 logger = logging.getLogger(__name__)
 
 
@@ -23,6 +26,16 @@ class DatasetCfg(collections.namedtuple('DatasetCfg',
 def masked_categorical_crossentropy(gt, pr):
     mask = 1 - gt[:, :, 0]
     return categorical_crossentropy(gt, pr) * mask
+
+
+class CheckpointsCallback(Callback):
+    def __init__(self, checkpoints_path):
+        self.checkpoints_path = checkpoints_path
+
+    def on_epoch_end(self, epoch, logs=None):
+        if self.checkpoints_path is not None:
+            self.model.save_weights(self.checkpoints_path + "." + str(epoch))
+            print("saved ", self.checkpoints_path + "." + str(epoch))
 
 
 def find_latest_checkpoint(checkpoints_path, fail_safe=True):
@@ -91,16 +104,17 @@ class Train:
         self,
         net="default",
         checkpoints_path: str = "./weights",
+        log_dir: str = "logs",
         train_dataset: DatasetCfg = None,
         valid_dataset: DatasetCfg = None,
         n_classes: int = 68,
         channels=3,
-        img_dim: t.Tuple[int, int] = (416, 416),
+        input_height: int = None,
+        input_width: int = None,
         ignore_zero_class=False,
-        augmentation_name: str = 'non_geometric'
+        augmentation_name: str = 'non_geometric',
     ):
-        self.n_classes = n_classes
-        self.output_dim = img_dim
+        self.log_dir = log_dir
         self.checkpoints_path = checkpoints_path
         self.train_dataset = train_dataset
         self.val_dataset = valid_dataset
@@ -108,10 +122,23 @@ class Train:
         self.ignore_zero_class = ignore_zero_class
         self.optimizer_name = 'adam'
         assert net in LANDMARKS_MODELS, "Invalid networks options"
-        self.model = LANDMARKS_MODELS[net](self.n_classes,
-                                           input_height=self.output_dim[0],
-                                           input_width=self.output_dim[1],
-                                           channels=channels)
+        
+        if isinstance(net, six.string_types):
+            # create the model from the name
+            assert (n_classes is not None), "Please provide the n_classes"
+            if (input_height is not None) and (input_width is not None):
+                self.model = LANDMARKS_MODELS[net](
+                    n_classes, input_height=input_height, input_width=input_width)
+            else:
+                self.model = LANDMARKS_MODELS[net](n_classes)
+
+        self.n_classes = self.model.n_classes
+        self.input_height = self.model.input_height
+        self.input_width = self.model.input_width
+        self.output_height = self.model.output_height
+        self.output_width = self.model.output_width
+
+        self.model_name = net
 
     def init_train(
         self,
@@ -119,14 +146,19 @@ class Train:
         batch_size: int = 32,
         initial_epoch: int = 5,
         gen_use_multiprocessing: bool = False,
-        log_dir: str = "logs"
+        load_weights=None,
+        validate=False,
+        auto_resume_checkpoint=True,
     ):
         train_gen = image_keypoints_generator(
             self.train_dataset.img_dirpath,
             self.train_dataset.keypts_dirpath,
             self.n_classes,
             batch_size=batch_size,
-            output_dim=self.output_dim,
+            input_height=self.input_height,
+            input_width=self.input_width,
+            output_height=self.output_height,
+            output_width=self.output_width,
             do_augment=True,
             augmentation_name=self.augmentation_name
         )
@@ -135,21 +167,13 @@ class Train:
             self.val_dataset.keypts_dirpath,
             self.n_classes,
             batch_size=batch_size,
-            output_dim=self.output_dim,
+            input_height=self.input_height,
+            input_width=self.input_width,
+            output_height=self.output_height,
+            output_width=self.output_width,
             do_augment=True,
             augmentation_name=self.augmentation_name
         )
-
-        callbacks = [
-            EarlyStopping(min_delta=0.001, patience=5),
-            TensorBoard(log_dir=log_dir)
-        ]
-        if self.checkpoints_path is not None:
-            callbacks.append(ModelCheckpoint(
-                filepath=self.checkpoints_path + ".{epoch:05d}",
-                save_weights_only=True,
-                verbose=True
-            ))
 
         if self.ignore_zero_class:
             loss_k = masked_categorical_crossentropy
@@ -157,17 +181,60 @@ class Train:
             loss_k = 'categorical_crossentropy'
 
         self.model.compile(loss=loss_k,
-                           optimizer=self.optimizer_name, 
+                           optimizer=self.optimizer_name,
                            metrics=['accuracy'])
 
-        self.model.fit(
-            train_gen,
-            steps_per_epoch=train_gen.steps_per_epoch,
-            validation_data=valid_gen,
-            validation_steps=valid_gen.steps_per_epoch,
-            epochs=epochs, callbacks=callbacks,
-            use_multiprocessing=gen_use_multiprocessing, initial_epoch=initial_epoch
-        )
+        if self.checkpoints_path is not None:
+            config_file = self.checkpoints_path + "_config.json"
+            dir_name = os.path.dirname(config_file)
+
+            if (not os.path.exists(dir_name)) and len(dir_name) > 0:
+                os.makedirs(dir_name)
+
+            with open(config_file, "w") as f:
+                json.dump({
+                    "model_class": self.model_name,
+                    "n_classes": self.n_classes,
+                    "output_height": self.output_height,
+                    "output_width": self.output_width
+                }, f)
+
+        if load_weights is not None and len(load_weights) > 0:
+            print("Loading weights from ", load_weights)
+            self.model.load_weights(load_weights)
+
+        initial_epoch = 0
+
+        if auto_resume_checkpoint and (self.checkpoints_path is not None):
+            latest_checkpoint = find_latest_checkpoint(self.checkpoints_path)
+            if latest_checkpoint is not None:
+                print("Loading the weights from latest checkpoint ", latest_checkpoint)
+                self.model.load_weights(latest_checkpoint)
+
+                initial_epoch = int(latest_checkpoint.split('.')[-1])
+
+        callbacks = []
+
+        if self.checkpoints_path is not None:
+            callbacks.append(ModelCheckpoint(
+                filepath=self.checkpoints_path + ".{epoch:05d}",
+                save_weights_only=True, verbose=True
+            ))
+
+        if not validate:
+            self.model.fit(
+                train_gen, steps_per_epoch=train_gen.steps_per_epoch,
+                epochs=epochs, callbacks=callbacks, initial_epoch=initial_epoch
+            )
+        else:
+            self.model.fit(
+                train_gen,
+                steps_per_epoch=train_gen.steps_per_epoch,
+                validation_data=valid_gen,
+                validation_steps=valid_gen.steps_per_epoch,
+                epochs=epochs, callbacks=callbacks,
+                use_multiprocessing=gen_use_multiprocessing, initial_epoch=initial_epoch
+            )
 
 
 class TrainCustomIter:

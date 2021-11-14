@@ -4,12 +4,14 @@ import numpy as np
 from .generator import image_keypoints_generator
 
 
-def get_train_dataset(images_path, segs_path, batch_size,
-                      n_classes, output_height, output_width,
-                      do_augment=False,
-                      augmentation_name="aug_all",
-                      preprocessing=None,
-                      read_image_type=cv2.IMREAD_COLOR):
+def get_train_dataset(
+    images_path, segs_path, batch_size,
+    n_classes, output_height, output_width,
+    do_augment=False,
+    augmentation_name="aug_all",
+    preprocessing=None,
+    grayscale=False
+) -> tf.data.Dataset:
     """
     Function to convert python iterator to tensorflow dataset
     """
@@ -18,7 +20,7 @@ def get_train_dataset(images_path, segs_path, batch_size,
                                           do_augment=do_augment,
                                           augmentation_name=augmentation_name,
                                           preprocessing=preprocessing,
-                                          read_image_type=read_image_type,
+                                          grayscale=grayscale,
                                           ignore_keypts=False)
 
     steps_per_epoch = np.floor(len(images_path) / batch_size)
